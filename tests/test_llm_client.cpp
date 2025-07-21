@@ -22,7 +22,7 @@ TEST_F(LLMClientTest, GenerateSimpleFileContent) {
     }
 
     std::vector<FileContext> folder_context;
-    std::vector<std::string> recent_files;
+    std::vector<FileContext> recent_files;
     
     std::string content = client_->generateFileContent(
         "/home/user/test.txt",
@@ -45,9 +45,9 @@ TEST_F(LLMClientTest, GenerateWithContext) {
         {"/home/user/CMakeLists.txt", "cmake_minimum_required(VERSION 3.10)\nproject(MyProject)\n"}
     };
     
-    std::vector<std::string> recent_files = {
-        "/home/user/README.md",
-        "/home/user/src/utils.h"
+    std::vector<FileContext> recent_files = {
+        {"/home/user/README.md", "# My Project\nThis is a sample project."},
+        {"/home/user/src/utils.h", "#ifndef UTILS_H\n#define UTILS_H\n// Utility functions\n#endif"}
     };
     
     std::string content = client_->generateFileContent(
@@ -65,7 +65,7 @@ TEST_F(LLMClientTest, MockedResponse) {
     LLMClient mock_client("http://localhost:8080/mock");
     
     std::vector<FileContext> folder_context;
-    std::vector<std::string> recent_files;
+    std::vector<FileContext> recent_files;
     
     try {
         std::string content = mock_client.generateFileContent(

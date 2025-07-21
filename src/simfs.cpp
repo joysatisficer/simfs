@@ -81,8 +81,8 @@ int SimFS::getattr(const char *path, struct stat *stbuf, struct fuse_file_info *
         return 0;
     }
     
-    // Special handling for config files - they must actually exist
-    if (isConfigFile(path)) {
+    // Special handling for special files - they must actually exist
+    if (isSpecialFile(path)) {
         return -ENOENT;
     }
     
@@ -202,10 +202,10 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
         // Content exists in database
         std::cerr << "[DEBUG] Content found in DB, length: " << content.length() << std::endl;
     } else {
-        // Special handling for config files - never generate them
-        if (isConfigFile(path)) {
-            std::cerr << "[DEBUG] Config file not found, returning empty: " << path << std::endl;
-            return 0;  // EOF for non-existent config files
+        // Special handling for special files - never generate them
+        if (isSpecialFile(path)) {
+            std::cerr << "[DEBUG] Special file not found, returning empty: " << path << std::endl;
+            return 0;  // EOF for non-existent special files
         }
         
         // Check if someone else is already streaming this file
@@ -245,11 +245,14 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
             }
         }
         
-        std::vector<std::string> recent_files;
+        std::vector<std::string> recent_paths;
         {
             std::lock_guard<std::mutex> recent_lock(recent_access_mutex);
-            recent_files.assign(recent_access_queue.begin(), recent_access_queue.end());
+            recent_paths.assign(recent_access_queue.begin(), recent_access_queue.end());
         }
+        
+        // Get recent files with content
+        std::vector<FileContext> recent_files = self->getRecentFilesWithContent(recent_paths);
         
         // Get the configuration for this path
         DirectoryConfig config = self->getConfigForPath(path);
@@ -311,11 +314,13 @@ int SimFS::write(const char *path, const char *buf, size_t size, off_t offset,
     self->db_->put(content_key, content);
     
     // If this is a config file, clear the config cache
-    std::string path_str(path);
-    if (path_str.find(".simfs_config.toml") != std::string::npos) {
-        std::lock_guard<std::mutex> config_lock(self->config_mutex_);
-        self->config_cache_.clear();
-        std::cerr << "[INFO] Config cache cleared due to config file update: " << path << std::endl;
+    if (isSpecialFile(path)) {
+        std::string path_str(path);
+        if (path_str.find(".simfs_config.toml") != std::string::npos) {
+            std::lock_guard<std::mutex> config_lock(self->config_mutex_);
+            self->config_cache_.clear();
+            std::cerr << "[INFO] Config cache cleared due to config file update: " << path << std::endl;
+        }
     }
     
     return size;
@@ -348,10 +353,13 @@ int SimFS::unlink(const char *path) {
     self->db_->remove(content_key);
     
     // If this is a config file, clear the config cache
-    if (isConfigFile(path)) {
-        std::lock_guard<std::mutex> config_lock(self->config_mutex_);
-        self->config_cache_.clear();
-        std::cerr << "[INFO] Config cache cleared due to config file deletion: " << path << std::endl;
+    if (isSpecialFile(path)) {
+        std::string path_str(path);
+        if (path_str.find(".simfs_config.toml") != std::string::npos) {
+            std::lock_guard<std::mutex> config_lock(self->config_mutex_);
+            self->config_cache_.clear();
+            std::cerr << "[INFO] Config cache cleared due to config file deletion: " << path << std::endl;
+        }
     }
     
     return 0;
@@ -380,8 +388,8 @@ int SimFS::rmdir(const char *path) {
 }
 
 std::string SimFS::generateContent(const std::string& path) {
-    // Safety check: never generate config files
-    if (isConfigFile(path)) {
+    // Safety check: never generate special files
+    if (isSpecialFile(path)) {
         return "";
     }
     
@@ -406,11 +414,14 @@ std::string SimFS::generateContent(const std::string& path) {
         }
     }
     
-    std::vector<std::string> recent_files;
+    std::vector<std::string> recent_paths;
     {
         std::lock_guard<std::mutex> recent_lock(recent_access_mutex);
-        recent_files.assign(recent_access_queue.begin(), recent_access_queue.end());
+        recent_paths.assign(recent_access_queue.begin(), recent_access_queue.end());
     }
+    
+    // Get recent files with content
+    std::vector<FileContext> recent_files = getRecentFilesWithContent(recent_paths);
     
     // Get the configuration for this path
     DirectoryConfig config = getConfigForPath(path);
@@ -429,9 +440,9 @@ std::string SimFS::getFileContent(const std::string& path) {
     std::string content;
     
     if (!db_->get(content_key, content)) {
-        // Never generate config files
-        if (isConfigFile(path)) {
-            std::cerr << "[DEBUG] Config file requested but not found: " << path << std::endl;
+        // Never generate special files
+        if (isSpecialFile(path)) {
+            std::cerr << "[DEBUG] Special file requested but not found: " << path << std::endl;
             return "";
         }
         
@@ -619,9 +630,101 @@ DirectoryConfig SimFS::getConfigForPath(const std::string& path) {
     return merged_config;
 }
 
-bool SimFS::isConfigFile(const std::string& path) {
-    // Check if the filename is exactly .simfs_config.toml
+bool SimFS::isSpecialFile(const std::string& path) {
+    // Extract filename from path
     size_t last_slash = path.find_last_of('/');
     std::string filename = (last_slash != std::string::npos) ? path.substr(last_slash + 1) : path;
-    return filename == ".simfs_config.toml";
+    
+    // List of special files that should never be auto-generated
+    static const std::vector<std::string> special_files = {
+        ".simfs_config.toml",    // SimFS configuration
+        ".xdg-volume-info",      // XDG volume metadata
+        "autorun.inf",           // Windows autorun file
+        ".DS_Store",             // macOS directory metadata
+        "desktop.ini",           // Windows folder settings
+        "Thumbs.db",             // Windows thumbnail cache
+        ".directory",            // KDE directory settings
+        "NTUSER.DAT",           // Windows user registry
+        "pagefile.sys",          // Windows page file
+        "hiberfil.sys",          // Windows hibernation file
+        "swapfile.sys"           // Windows swap file
+    };
+    
+    // Check if filename matches any special file
+    for (const auto& special : special_files) {
+        if (filename == special) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+std::string SimFS::getTailContent(const std::string& content, size_t max_chars) {
+    if (content.length() <= max_chars) {
+        return content;
+    }
+    // Return the last max_chars characters
+    return content.substr(content.length() - max_chars);
+}
+
+std::vector<FileContext> SimFS::getRecentFilesWithContent(const std::vector<std::string>& recent_paths) {
+    std::vector<FileContext> result;
+    
+    // Constants for token management
+    const size_t CHARS_PER_TOKEN = 3;
+    const size_t MAX_TOKENS_PER_FILE = 1200;
+    const size_t MAX_CHARS_PER_FILE = MAX_TOKENS_PER_FILE * CHARS_PER_TOKEN; // 3600 chars
+    const size_t MAX_RECENT_FILES = 6;
+    const size_t MAX_TOTAL_TOKENS = 8000;
+    const size_t MAX_TOTAL_CHARS = MAX_TOTAL_TOKENS * CHARS_PER_TOKEN; // 24000 chars
+    
+    // Take up to the last 6 files
+    size_t start_idx = (recent_paths.size() > MAX_RECENT_FILES) 
+        ? recent_paths.size() - MAX_RECENT_FILES 
+        : 0;
+    
+    size_t total_chars = 0;
+    
+    for (size_t i = start_idx; i < recent_paths.size(); ++i) {
+        const std::string& path = recent_paths[i];
+        
+        // Skip special files
+        if (isSpecialFile(path)) {
+            continue;
+        }
+        
+        std::string content_key = std::string("content:") + path;
+        std::string content;
+        
+        if (db_->get(content_key, content)) {
+            // Get the tail of the content, up to max chars per file
+            std::string tail_content = getTailContent(content, MAX_CHARS_PER_FILE);
+            
+            // Check if adding this would exceed total limit
+            if (total_chars + tail_content.length() > MAX_TOTAL_CHARS) {
+                // Truncate to fit within total limit
+                size_t remaining_chars = MAX_TOTAL_CHARS - total_chars;
+                if (remaining_chars > 0) {
+                    tail_content = tail_content.substr(0, remaining_chars);
+                } else {
+                    break; // No more room
+                }
+            }
+            
+            FileContext fc;
+            fc.path = path;
+            fc.content = tail_content;
+            result.push_back(fc);
+            
+            total_chars += tail_content.length();
+            
+            // Stop if we've reached the total limit
+            if (total_chars >= MAX_TOTAL_CHARS) {
+                break;
+            }
+        }
+    }
+    
+    return result;
 }

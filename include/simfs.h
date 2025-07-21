@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include "llm_client.h"  // For FileContext
 
 class DBManager;
 class LLMClient;
@@ -57,7 +58,11 @@ private:
     // Configuration management
     DirectoryConfig getConfigForPath(const std::string& path);
     DirectoryConfig loadConfigFromDirectory(const std::string& dir_path);
-    static bool isConfigFile(const std::string& path);
+    static bool isSpecialFile(const std::string& path);
+    
+    // Helper functions
+    std::string getTailContent(const std::string& content, size_t max_chars);
+    std::vector<FileContext> getRecentFilesWithContent(const std::vector<std::string>& recent_paths);
 
     std::unique_ptr<DBManager> db_;
     std::unique_ptr<LLMClient> llm_client_;

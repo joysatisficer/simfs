@@ -142,7 +142,7 @@ LLMClient::~LLMClient() {
 std::string LLMClient::generateFileContent(
     const std::string& file_path,
     const std::vector<FileContext>& folder_context,
-    const std::vector<std::string>& recent_files,
+    const std::vector<FileContext>& recent_files,
     const std::string& model_name) {
     
     CURL* curl = curl_easy_init();
@@ -156,7 +156,8 @@ std::string LLMClient::generateFileContent(
         json request_body;
         
         std::stringstream prompt;
-        prompt << "Generate content for the file: " << file_path << "\n\n";
+        prompt << "Generate content for the file at absolute path: " << file_path << "\n";
+        prompt << "This path represents the file's location in the entire filesystem.\n\n";
         
         if (!folder_context.empty()) {
             prompt << "Files in the same folder:\n";
@@ -167,18 +168,18 @@ std::string LLMClient::generateFileContent(
         }
         
         if (!recent_files.empty()) {
-            prompt << "\nRecently accessed files:\n";
-            for (const auto& file : recent_files) {
-                prompt << "- " << file << "\n";
+            prompt << "\nRecently accessed files (showing tail of content):\n";
+            for (const auto& ctx : recent_files) {
+                prompt << "\n--- " << ctx.path << " ---\n";
+                prompt << ctx.content << "\n";
             }
         }
         
-        prompt << "\nGenerate only the raw file content for " << file_path << ". No explanations or markdown.";
+        prompt << "\nBased on the absolute path and context, generate only the raw file content for " << file_path << ". No explanations or markdown.";
         
         request_body["model"] = model_name;
         request_body["messages"] = json::array({
-            {{"role", "system"}, {"content", "You are a file content generator. Generate ONLY the raw file content without any explanation, commentary, or markdown formatting. Do not include phrases like 'Here is the content' or 'Based on the context'. Start directly with the actual file content."}},
-            {{"role", "user"}, {"content", prompt.str()}}
+            {{"role", "user"}, {"content", "You are a file content generator. Pay careful attention to the absolute file path to understand the file's purpose and location in the filesystem. Generate ONLY the raw file content without any explanation, commentary, or markdown formatting. Do not include phrases like 'Here is the content' or 'Based on the context'. Start directly with the actual file content.\n\n" + prompt.str()}}
         });
         request_body["temperature"] = 0.7;
         request_body["max_tokens"] = 2048;
@@ -232,7 +233,7 @@ std::string LLMClient::generateFileContent(
 std::shared_ptr<StreamingBuffer> LLMClient::generateFileContentStream(
     const std::string& file_path,
     const std::vector<FileContext>& folder_context,
-    const std::vector<std::string>& recent_files,
+    const std::vector<FileContext>& recent_files,
     const std::string& model_name) {
     
     auto buffer = std::make_shared<StreamingBuffer>();
@@ -249,7 +250,8 @@ std::shared_ptr<StreamingBuffer> LLMClient::generateFileContentStream(
             json request_body;
             
             std::stringstream prompt;
-            prompt << "Generate content for the file: " << file_path << "\n\n";
+            prompt << "Generate content for the file at absolute path: " << file_path << "\n";
+            prompt << "This path represents the file's location in the entire filesystem.\n\n";
             
             if (!folder_context.empty()) {
                 prompt << "Files in the same folder:\n";
@@ -260,20 +262,20 @@ std::shared_ptr<StreamingBuffer> LLMClient::generateFileContentStream(
             }
             
             if (!recent_files.empty()) {
-                prompt << "\nRecently accessed files:\n";
-                for (const auto& file : recent_files) {
-                    prompt << "- " << file << "\n";
+                prompt << "\nRecently accessed files (showing tail of content):\n";
+                for (const auto& ctx : recent_files) {
+                    prompt << "\n--- " << ctx.path << " ---\n";
+                    prompt << ctx.content << "\n";
                 }
             }
             
-            prompt << "\nPlease generate appropriate content for " << file_path;
-            prompt << " based on the context. The content should be realistic and consistent ";
-            prompt << "with what would be expected in this file system location.";
+            prompt << "\nBased on the absolute path, please generate appropriate content for " << file_path;
+            prompt << ". The content should be realistic and consistent ";
+            prompt << "with what would be expected at this location in the filesystem.";
             
             request_body["model"] = model_name;
             request_body["messages"] = json::array({
-                {{"role", "system"}, {"content", "You are a file content generator. Generate ONLY the raw file content without any explanation, commentary, or markdown formatting. Do not include phrases like 'Here is the content' or 'Based on the context'. Start directly with the actual file content."}},
-                {{"role", "user"}, {"content", prompt.str()}}
+                {{"role", "user"}, {"content", "You are a file content generator. Pay careful attention to the absolute file path to understand the file's purpose and location in the filesystem. Generate ONLY the raw file content without any explanation, commentary, or markdown formatting. Do not include phrases like 'Here is the content' or 'Based on the context'. Start directly with the actual file content.\n\n" + prompt.str()}}
             });
             request_body["temperature"] = 0.7;
             request_body["max_tokens"] = 2048;

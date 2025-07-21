@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(mount)",
+      "Bash(fusermount:*)",
+      "Bash(true)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(make:*)",
+      "Bash(cmake:*)",
+      "Bash(rm:*)"
+    ],
+    "deny": []
+  }
+}

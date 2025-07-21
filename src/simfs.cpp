@@ -10,6 +10,8 @@
 #include <chrono>
 #include <deque>
 #include <iostream>
+#include <fstream>
+#include <toml++/toml.hpp>
 
 SimFS* SimFS::instance_ = nullptr;
 
@@ -77,6 +79,11 @@ int SimFS::getattr(const char *path, struct stat *stbuf, struct fuse_file_info *
         stbuf->st_atime = stbuf->st_mtime = stbuf->st_ctime = time(NULL);
         
         return 0;
+    }
+    
+    // Special handling for config files - they must actually exist
+    if (isConfigFile(path)) {
+        return -ENOENT;
     }
     
     // For lazy generation, only assume files (with extensions) exist
@@ -195,6 +202,12 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
         // Content exists in database
         std::cerr << "[DEBUG] Content found in DB, length: " << content.length() << std::endl;
     } else {
+        // Special handling for config files - never generate them
+        if (isConfigFile(path)) {
+            std::cerr << "[DEBUG] Config file not found, returning empty: " << path << std::endl;
+            return 0;  // EOF for non-existent config files
+        }
+        
         // Check if someone else is already streaming this file
         {
             std::lock_guard<std::mutex> stream_lock(self->streaming_mutex_);
@@ -238,7 +251,10 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
             recent_files.assign(recent_access_queue.begin(), recent_access_queue.end());
         }
         
-        auto buffer = self->llm_client_->generateFileContentStream(path, context_files, recent_files);
+        // Get the configuration for this path
+        DirectoryConfig config = self->getConfigForPath(path);
+        
+        auto buffer = self->llm_client_->generateFileContentStream(path, context_files, recent_files, config.model_name);
         
         {
             std::lock_guard<std::mutex> stream_lock(self->streaming_mutex_);
@@ -294,6 +310,14 @@ int SimFS::write(const char *path, const char *buf, size_t size, off_t offset,
     
     self->db_->put(content_key, content);
     
+    // If this is a config file, clear the config cache
+    std::string path_str(path);
+    if (path_str.find(".simfs_config.toml") != std::string::npos) {
+        std::lock_guard<std::mutex> config_lock(self->config_mutex_);
+        self->config_cache_.clear();
+        std::cerr << "[INFO] Config cache cleared due to config file update: " << path << std::endl;
+    }
+    
     return size;
 }
 
@@ -323,6 +347,13 @@ int SimFS::unlink(const char *path) {
     self->db_->remove(metadata_key);
     self->db_->remove(content_key);
     
+    // If this is a config file, clear the config cache
+    if (isConfigFile(path)) {
+        std::lock_guard<std::mutex> config_lock(self->config_mutex_);
+        self->config_cache_.clear();
+        std::cerr << "[INFO] Config cache cleared due to config file deletion: " << path << std::endl;
+    }
+    
     return 0;
 }
 
@@ -349,6 +380,11 @@ int SimFS::rmdir(const char *path) {
 }
 
 std::string SimFS::generateContent(const std::string& path) {
+    // Safety check: never generate config files
+    if (isConfigFile(path)) {
+        return "";
+    }
+    
     std::string dir_path = path.substr(0, path.find_last_of('/'));
     auto files = getDirectoryContents(dir_path);
     
@@ -376,8 +412,11 @@ std::string SimFS::generateContent(const std::string& path) {
         recent_files.assign(recent_access_queue.begin(), recent_access_queue.end());
     }
     
+    // Get the configuration for this path
+    DirectoryConfig config = getConfigForPath(path);
+    
     try {
-        return llm_client_->generateFileContent(path, context_files, recent_files);
+        return llm_client_->generateFileContent(path, context_files, recent_files, config.model_name);
     } catch (const std::exception& e) {
         // If LLM generation fails, return a placeholder message
         return "Error generating content: " + std::string(e.what()) + "\n";
@@ -390,6 +429,12 @@ std::string SimFS::getFileContent(const std::string& path) {
     std::string content;
     
     if (!db_->get(content_key, content)) {
+        // Never generate config files
+        if (isConfigFile(path)) {
+            std::cerr << "[DEBUG] Config file requested but not found: " << path << std::endl;
+            return "";
+        }
+        
         std::cerr << "[DEBUG] Content not in DB, generating..." << std::endl;
         content = generateContent(path);
         std::cerr << "[DEBUG] Generated content length: " << content.length() << std::endl;
@@ -452,4 +497,131 @@ std::string SimFS::getFolderContext(const std::string& path) {
     }
     
     return context.str();
+}
+
+DirectoryConfig SimFS::loadConfigFromDirectory(const std::string& dir_path) {
+    DirectoryConfig config;
+    
+    // Construct the config file path
+    std::string config_path;
+    if (dir_path.empty() || dir_path == "/") {
+        config_path = "/.simfs_config.toml";
+    } else {
+        config_path = dir_path;
+        if (config_path.back() != '/') {
+            config_path += '/';
+        }
+        config_path += ".simfs_config.toml";
+    }
+    
+    std::cerr << "[DEBUG] Looking for config file: " << config_path << std::endl;
+    
+    // Check if the config file exists in the virtual filesystem
+    std::string content_key = std::string("content:") + config_path;
+    std::string config_content;
+    
+    if (db_->get(content_key, config_content)) {
+        std::cerr << "[INFO] Found config file: " << config_path << " with content: " << config_content << std::endl;
+        // Parse the TOML content
+        try {
+            auto table = toml::parse(config_content);
+            
+            // Read model name if present
+            if (table.contains("model")) {
+                config.model_name = table["model"].value_or(config.model_name);
+                std::cerr << "[INFO] Loaded model from config: " << config.model_name << std::endl;
+            }
+            
+            // Future: read other settings
+            // if (table.contains("temperature")) {
+            //     config.temperature = table["temperature"].value_or(config.temperature);
+            // }
+            
+        } catch (const toml::parse_error& e) {
+            std::cerr << "[WARNING] Failed to parse config file " << config_path 
+                      << ": " << e.what() << std::endl;
+        }
+    } else {
+        std::cerr << "[DEBUG] No config file found at: " << config_path << std::endl;
+    }
+    
+    return config;
+}
+
+DirectoryConfig SimFS::getConfigForPath(const std::string& path) {
+    std::cerr << "[DEBUG] getConfigForPath called for: " << path << std::endl;
+    
+    // Extract the directory from the path
+    size_t last_slash = path.find_last_of('/');
+    std::string dir_path = (last_slash != std::string::npos) ? path.substr(0, last_slash) : "";
+    
+    std::cerr << "[DEBUG] Extracted directory path: " << dir_path << std::endl;
+    
+    // Check cache first
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        auto it = config_cache_.find(dir_path);
+        if (it != config_cache_.end()) {
+            std::cerr << "[DEBUG] Found config in cache for: " << dir_path << " with model: " << it->second.model_name << std::endl;
+            return it->second;
+        }
+    }
+    
+    // Load config, checking parent directories for inheritance
+    DirectoryConfig merged_config;
+    std::vector<std::string> dir_components;
+    
+    // Split the path into components
+    if (!dir_path.empty()) {
+        size_t start = 0;
+        size_t end = dir_path.find('/', start);
+        
+        while (end != std::string::npos) {
+            if (end > start) {
+                dir_components.push_back(dir_path.substr(start, end - start));
+            }
+            start = end + 1;
+            end = dir_path.find('/', start);
+        }
+        
+        if (start < dir_path.length()) {
+            dir_components.push_back(dir_path.substr(start));
+        }
+    }
+    
+    // Check each directory level for config, from root to target
+    std::string current_path;
+    for (const auto& component : dir_components) {
+        current_path += "/" + component;
+        
+        DirectoryConfig dir_config = loadConfigFromDirectory(current_path);
+        // For now, just override with the most specific config
+        // In the future, we could merge settings more intelligently
+        if (dir_config.model_name != "meta-llama/Llama-3.2-3B-Instruct") {
+            merged_config = dir_config;
+        }
+    }
+    
+    // Also check the root directory
+    DirectoryConfig root_config = loadConfigFromDirectory("/");
+    if (merged_config.model_name == "meta-llama/Llama-3.2-3B-Instruct" && root_config.model_name != "meta-llama/Llama-3.2-3B-Instruct") {
+        merged_config = root_config;
+    }
+    
+    // Cache the result
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        config_cache_[dir_path] = merged_config;
+    }
+    
+    std::cerr << "[DEBUG] Final config for path " << path << ": model=" << merged_config.model_name << std::endl;
+    
+    return merged_config;
+}
+
+bool SimFS::isConfigFile(const std::string& path) {
+    // Check if the filename is exactly .simfs_config.toml
+    size_t last_slash = path.find_last_of('/');
+    std::string filename = (last_slash != std::string::npos) ? path.substr(last_slash + 1) : path;
+    return filename == ".simfs_config.toml";
 }

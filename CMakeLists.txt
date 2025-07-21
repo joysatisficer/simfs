@@ -12,6 +12,16 @@ find_package(RocksDB REQUIRED)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
+# Include toml++ header-only library
+include(FetchContent)
+FetchContent_Declare(
+    tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(tomlplusplus)
+
 add_executable(simfs
     src/main.cpp
     src/simfs.cpp
@@ -76,6 +86,7 @@ target_link_libraries(test_simfs_integration
     CURL::libcurl
     nlohmann_json::nlohmann_json
     pthread
+    tomlplusplus::tomlplusplus
 )
 
 target_compile_options(test_simfs_integration PRIVATE ${FUSE3_CFLAGS_OTHER})
@@ -94,5 +105,8 @@ target_link_libraries(simfs
     nlohmann_json::nlohmann_json
     pthread
 )
+
+# Link toml++
+target_link_libraries(simfs tomlplusplus::tomlplusplus)
 
 target_compile_options(simfs PRIVATE ${FUSE3_CFLAGS_OTHER})

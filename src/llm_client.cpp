@@ -142,7 +142,8 @@ LLMClient::~LLMClient() {
 std::string LLMClient::generateFileContent(
     const std::string& file_path,
     const std::vector<FileContext>& folder_context,
-    const std::vector<std::string>& recent_files) {
+    const std::vector<std::string>& recent_files,
+    const std::string& model_name) {
     
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -174,7 +175,7 @@ std::string LLMClient::generateFileContent(
         
         prompt << "\nGenerate only the raw file content for " << file_path << ". No explanations or markdown.";
         
-        request_body["model"] = "gpt-3.5-turbo";
+        request_body["model"] = model_name;
         request_body["messages"] = json::array({
             {{"role", "system"}, {"content", "You are a file content generator. Generate ONLY the raw file content without any explanation, commentary, or markdown formatting. Do not include phrases like 'Here is the content' or 'Based on the context'. Start directly with the actual file content."}},
             {{"role", "user"}, {"content", prompt.str()}}
@@ -231,12 +232,13 @@ std::string LLMClient::generateFileContent(
 std::shared_ptr<StreamingBuffer> LLMClient::generateFileContentStream(
     const std::string& file_path,
     const std::vector<FileContext>& folder_context,
-    const std::vector<std::string>& recent_files) {
+    const std::vector<std::string>& recent_files,
+    const std::string& model_name) {
     
     auto buffer = std::make_shared<StreamingBuffer>();
     
     // Run the streaming request in a separate thread
-    std::thread([this, file_path, folder_context, recent_files, buffer]() {
+    std::thread([this, file_path, folder_context, recent_files, model_name, buffer]() {
         CURL* curl = curl_easy_init();
         if (!curl) {
             buffer->markError("Failed to initialize CURL");
@@ -268,7 +270,7 @@ std::shared_ptr<StreamingBuffer> LLMClient::generateFileContentStream(
             prompt << " based on the context. The content should be realistic and consistent ";
             prompt << "with what would be expected in this file system location.";
             
-            request_body["model"] = "gpt-3.5-turbo";
+            request_body["model"] = model_name;
             request_body["messages"] = json::array({
                 {{"role", "system"}, {"content", "You are a file content generator. Generate ONLY the raw file content without any explanation, commentary, or markdown formatting. Do not include phrases like 'Here is the content' or 'Based on the context'. Start directly with the actual file content."}},
                 {{"role", "user"}, {"content", prompt.str()}}

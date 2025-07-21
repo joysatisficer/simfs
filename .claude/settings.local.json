@@ -10,7 +10,8 @@
       "Bash(touch:*)",
       "Bash(make:*)",
       "Bash(cmake:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }

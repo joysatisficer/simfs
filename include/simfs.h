@@ -14,6 +14,16 @@ class DBManager;
 class LLMClient;
 class StreamingBuffer;
 
+// Configuration for per-directory settings
+struct DirectoryConfig {
+    std::string model_name = "meta-llama/Llama-3.2-3B-Instruct";  // Default model
+    
+    // Future expansion possibilities:
+    // float temperature = 0.7;
+    // int max_tokens = 2048;
+    // std::string system_prompt;
+};
+
 class SimFS {
 public:
     SimFS(const std::string& db_path, const std::string& llm_endpoint);
@@ -43,6 +53,11 @@ private:
     bool fileExists(const std::string& path);
     std::vector<std::string> getDirectoryContents(const std::string& path);
     std::string getFolderContext(const std::string& path);
+    
+    // Configuration management
+    DirectoryConfig getConfigForPath(const std::string& path);
+    DirectoryConfig loadConfigFromDirectory(const std::string& dir_path);
+    static bool isConfigFile(const std::string& path);
 
     std::unique_ptr<DBManager> db_;
     std::unique_ptr<LLMClient> llm_client_;
@@ -51,6 +66,10 @@ private:
     // Streaming support
     mutable std::mutex streaming_mutex_;
     mutable std::unordered_map<std::string, std::shared_ptr<StreamingBuffer>> streaming_buffers_;
+    
+    // Configuration cache
+    mutable std::mutex config_mutex_;
+    mutable std::unordered_map<std::string, DirectoryConfig> config_cache_;
     
     static SimFS* instance_;
     static struct fuse_operations operations_;

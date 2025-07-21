@@ -51,14 +51,16 @@ public:
     std::string generateFileContent(
         const std::string& file_path,
         const std::vector<FileContext>& folder_context,
-        const std::vector<std::string>& recent_files
+        const std::vector<std::string>& recent_files,
+        const std::string& model_name = "meta-llama/Llama-3.2-3B-Instruct"
     );
     
     // New streaming API
     std::shared_ptr<StreamingBuffer> generateFileContentStream(
         const std::string& file_path,
         const std::vector<FileContext>& folder_context,
-        const std::vector<std::string>& recent_files
+        const std::vector<std::string>& recent_files,
+        const std::string& model_name = "meta-llama/Llama-3.2-3B-Instruct"
     );
 
 private:

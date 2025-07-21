@@ -8,6 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <atomic>
 
 struct FileContext {
     std::string path;

@@ -79,7 +79,7 @@ int SimFS::getattr(const char *path, struct stat *stbuf, struct fuse_file_info *
         return 0;
     }
     
-    // For lazy generation, assume any path with an extension is a valid file
+    // For lazy generation, only assume files (with extensions) exist
     std::string path_str(path);
     size_t last_slash = path_str.find_last_of('/');
     size_t last_dot = path_str.find_last_of('.');
@@ -87,7 +87,7 @@ int SimFS::getattr(const char *path, struct stat *stbuf, struct fuse_file_info *
     // Check if it has an extension (dot after last slash)
     if (last_dot != std::string::npos && 
         (last_slash == std::string::npos || last_dot > last_slash)) {
-        // It's a file
+        // It's a file with an extension - report it exists for lazy generation
         stbuf->st_mode = S_IFREG | 0644;
         stbuf->st_nlink = 1;
         stbuf->st_size = 0;  // Unknown size for streaming behavior
@@ -97,13 +97,8 @@ int SimFS::getattr(const char *path, struct stat *stbuf, struct fuse_file_info *
         return 0;
     }
     
-    // Otherwise, assume it's a directory
-    stbuf->st_mode = S_IFDIR | 0755;
-    stbuf->st_nlink = 2;
-    stbuf->st_uid = getuid();
-    stbuf->st_gid = getgid();
-    stbuf->st_atime = stbuf->st_mtime = stbuf->st_ctime = time(NULL);
-    return 0;
+    // Not a file with extension - doesn't exist
+    return -ENOENT;
 }
 
 int SimFS::readdir(const char *path, void *buf, fuse_fill_dir_t filler,
@@ -194,12 +189,25 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
     std::string content_key = std::string("content:") + path;
     std::string content;
     
-    std::lock_guard<std::mutex> lock(self->mutex_);
+    std::unique_lock<std::mutex> lock(self->mutex_);
     
     if (self->db_->get(content_key, content)) {
         // Content exists in database
         std::cerr << "[DEBUG] Content found in DB, length: " << content.length() << std::endl;
     } else {
+        // Check if someone else is already streaming this file
+        {
+            std::lock_guard<std::mutex> stream_lock(self->streaming_mutex_);
+            auto it = self->streaming_buffers_.find(path);
+            if (it != self->streaming_buffers_.end()) {
+                // Another reader is streaming this file - use their buffer
+                std::cerr << "[DEBUG] Joining existing stream for: " << path << std::endl;
+                stream_buffer = it->second;
+                lock.unlock();  // Release main lock before blocking read
+                return stream_buffer->readData(buf, size, offset);
+            }
+        }
+        
         // Start streaming generation
         std::cerr << "[DEBUG] Starting streaming generation for: " << path << std::endl;
         

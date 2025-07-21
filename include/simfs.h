@@ -62,7 +62,9 @@ private:
     
     // Helper functions
     std::string getTailContent(const std::string& content, size_t max_chars);
-    std::vector<FileContext> getRecentFilesWithContent(const std::vector<std::string>& recent_paths);
+    std::vector<FileContext> getRecentFilesWithContent(
+        const std::vector<std::string>& recent_paths,
+        const std::vector<std::string>& exclude_paths = {});
 
     std::unique_ptr<DBManager> db_;
     std::unique_ptr<LLMClient> llm_client_;

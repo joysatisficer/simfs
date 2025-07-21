@@ -12,6 +12,7 @@
 #include <iostream>
 #include <fstream>
 #include <toml++/toml.hpp>
+#include <unordered_set>
 
 SimFS* SimFS::instance_ = nullptr;
 
@@ -182,6 +183,15 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
                 
                 std::string metadata_key = std::string("meta:") + path;
                 self->db_->put(metadata_key, "type:file");
+                
+                // Add to recent access queue since we just generated it
+                {
+                    std::lock_guard<std::mutex> recent_lock(recent_access_mutex);
+                    recent_access_queue.push_back(path);
+                    if (recent_access_queue.size() > MAX_RECENT_FILES) {
+                        recent_access_queue.pop_front();
+                    }
+                }
             }
             
             // Remove streaming buffer
@@ -251,8 +261,15 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
             recent_paths.assign(recent_access_queue.begin(), recent_access_queue.end());
         }
         
-        // Get recent files with content
-        std::vector<FileContext> recent_files = self->getRecentFilesWithContent(recent_paths);
+        // Build exclusion list from folder context files and the file being generated
+        std::vector<std::string> exclude_paths;
+        exclude_paths.push_back(path);  // Exclude the file being generated
+        for (const auto& ctx : context_files) {
+            exclude_paths.push_back(ctx.path);
+        }
+        
+        // Get recent files with content, excluding folder context files
+        std::vector<FileContext> recent_files = self->getRecentFilesWithContent(recent_paths, exclude_paths);
         
         // Get the configuration for this path
         DirectoryConfig config = self->getConfigForPath(path);
@@ -262,6 +279,15 @@ int SimFS::read(const char *path, char *buf, size_t size, off_t offset,
         {
             std::lock_guard<std::mutex> stream_lock(self->streaming_mutex_);
             self->streaming_buffers_[path] = buffer;
+        }
+        
+        // Add to recent access queue since we're generating it
+        {
+            std::lock_guard<std::mutex> recent_lock(recent_access_mutex);
+            recent_access_queue.push_back(path);
+            if (recent_access_queue.size() > MAX_RECENT_FILES) {
+                recent_access_queue.pop_front();
+            }
         }
         
         // Return data from the new streaming buffer
@@ -420,8 +446,15 @@ std::string SimFS::generateContent(const std::string& path) {
         recent_paths.assign(recent_access_queue.begin(), recent_access_queue.end());
     }
     
-    // Get recent files with content
-    std::vector<FileContext> recent_files = getRecentFilesWithContent(recent_paths);
+    // Build exclusion list from folder context files and the file being generated
+    std::vector<std::string> exclude_paths;
+    exclude_paths.push_back(path);  // Exclude the file being generated
+    for (const auto& ctx : context_files) {
+        exclude_paths.push_back(ctx.path);
+    }
+    
+    // Get recent files with content, excluding folder context files
+    std::vector<FileContext> recent_files = getRecentFilesWithContent(recent_paths, exclude_paths);
     
     // Get the configuration for this path
     DirectoryConfig config = getConfigForPath(path);
@@ -453,6 +486,15 @@ std::string SimFS::getFileContent(const std::string& path) {
         
         std::string metadata_key = std::string("meta:") + path;
         db_->put(metadata_key, "type:file");
+        
+        // Add to recent access queue since we just generated it
+        {
+            std::lock_guard<std::mutex> recent_lock(recent_access_mutex);
+            recent_access_queue.push_back(path);
+            if (recent_access_queue.size() > MAX_RECENT_FILES) {
+                recent_access_queue.pop_front();
+            }
+        }
     } else {
         std::cerr << "[DEBUG] Content found in DB, length: " << content.length() << std::endl;
     }
@@ -668,8 +710,13 @@ std::string SimFS::getTailContent(const std::string& content, size_t max_chars) 
     return content.substr(content.length() - max_chars);
 }
 
-std::vector<FileContext> SimFS::getRecentFilesWithContent(const std::vector<std::string>& recent_paths) {
+std::vector<FileContext> SimFS::getRecentFilesWithContent(
+    const std::vector<std::string>& recent_paths,
+    const std::vector<std::string>& exclude_paths) {
     std::vector<FileContext> result;
+    
+    // Create a set for faster exclusion checking
+    std::unordered_set<std::string> exclude_set(exclude_paths.begin(), exclude_paths.end());
     
     // Constants for token management
     const size_t CHARS_PER_TOKEN = 3;
@@ -691,6 +738,11 @@ std::vector<FileContext> SimFS::getRecentFilesWithContent(const std::vector<std:
         
         // Skip special files
         if (isSpecialFile(path)) {
+            continue;
+        }
+        
+        // Skip excluded files
+        if (exclude_set.find(path) != exclude_set.end()) {
             continue;
         }
         
